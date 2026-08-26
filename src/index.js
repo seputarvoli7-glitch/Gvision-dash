@@ -5,6 +5,8 @@ const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
   "Access-Control-Allow-Headers": "*",
+  "Access-Control-Expose-Headers":
+    "Content-Length,Content-Range,Accept-Ranges",
   "Cache-Control": "no-cache"
 };
 
@@ -22,52 +24,80 @@ export default {
       });
     }
 
-    const current = new URL(request.url);
+    const reqUrl = new URL(request.url);
 
-    let target =
-      current.searchParams.get("url") || SOURCE;
+    const target =
+      reqUrl.searchParams.get("url") || SOURCE;
 
     try {
 
-      const response = await fetch(target, {
-        headers: {
-          "User-Agent": "Mozilla/5.0",
-          "Accept": "*/*"
-        }
-      });
+      const headers = new Headers();
 
-      if (!response.ok) {
+      headers.set(
+        "User-Agent",
+        "Mozilla/5.0"
+      );
+
+      headers.set(
+        "Accept",
+        "*/*"
+      );
+
+      /*
+       * Penting untuk DASH video segment
+       */
+      const range =
+        request.headers.get("Range");
+
+      if (range) {
+        headers.set("Range", range);
+      }
+
+      const upstream =
+        await fetch(target, {
+          method: request.method,
+          headers
+        });
+
+      if (!upstream.ok) {
+
         return new Response(
-          "Upstream error: " + response.status,
+          "Upstream: " +
+          upstream.status,
           {
-            status: response.status,
+            status: upstream.status,
             headers: CORS
           }
         );
+
       }
 
       const contentType =
-        response.headers.get("content-type") || "";
+        upstream.headers.get(
+          "content-type"
+        ) || "";
 
       /*
        * MPD
        */
       if (
         target.includes(".mpd") ||
-        contentType.includes("xml") ||
-        contentType.includes("dash")
+        contentType.includes("dash") ||
+        contentType.includes("xml")
       ) {
 
-        let mpd = await response.text();
+        let mpd =
+          await upstream.text();
 
-        const base = new URL(target);
+        const base =
+          new URL(target);
 
         /*
          * BaseURL
          */
         mpd = mpd.replace(
-          /<BaseURL>(.*?)<\/BaseURL>/gi,
-          (match, value) => {
+          /<BaseURL([^>]*)>([\s\S]*?)<\/BaseURL>/gi,
+          (match, attrs, value) => {
 
             try {
 
@@ -78,9 +108,11 @@ export default {
                 ).href;
 
               return (
-                "<BaseURL>" +
+                "<BaseURL" +
+                attrs +
+                ">" +
                 proxyUrl(
-                  current.origin,
+                  reqUrl.origin,
                   absolute
                 ) +
                 "</BaseURL>"
@@ -91,15 +123,18 @@ export default {
               return match;
 
             }
+
           }
         );
 
         /*
-         * href / sourceURL / media / initialization
+         * media=
+         * initialization=
+         * sourceURL=
          */
         mpd = mpd.replace(
-          /(media|initialization|sourceURL|href)="([^"]+)"/gi,
-          (match, attribute, value) => {
+          /(media|initialization|sourceURL)="([^"]+)"/gi,
+          (match, attr, value) => {
 
             try {
 
@@ -110,10 +145,10 @@ export default {
                 ).href;
 
               return (
-                attribute +
+                attr +
                 '="' +
                 proxyUrl(
-                  current.origin,
+                  reqUrl.origin,
                   absolute
                 ) +
                 '"'
@@ -124,6 +159,7 @@ export default {
               return match;
 
             }
+
           }
         );
 
@@ -141,26 +177,67 @@ export default {
       }
 
       /*
-       * Segment video
+       * Segment DASH
        */
+      const outHeaders =
+        new Headers(CORS);
+
+      const ct =
+        upstream.headers.get(
+          "content-type"
+        );
+
+      const cr =
+        upstream.headers.get(
+          "content-range"
+        );
+
+      const cl =
+        upstream.headers.get(
+          "content-length"
+        );
+
+      const ar =
+        upstream.headers.get(
+          "accept-ranges"
+        );
+
+      if (ct)
+        outHeaders.set(
+          "Content-Type",
+          ct
+        );
+
+      if (cr)
+        outHeaders.set(
+          "Content-Range",
+          cr
+        );
+
+      if (cl)
+        outHeaders.set(
+          "Content-Length",
+          cl
+        );
+
+      if (ar)
+        outHeaders.set(
+          "Accept-Ranges",
+          ar
+        );
+
       return new Response(
-        response.body,
+        upstream.body,
         {
-          status: response.status,
-          headers: {
-            ...CORS,
-            "Content-Type":
-              response.headers.get(
-                "content-type"
-              ) || "video/mp4"
-          }
+          status: upstream.status,
+          headers: outHeaders
         }
       );
 
     } catch (error) {
 
       return new Response(
-        "DASH Worker Error: " +
+        "Worker Error: " +
         error.message,
         {
           status: 500,
