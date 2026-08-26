@@ -8,6 +8,10 @@ const CORS = {
   "Cache-Control": "no-cache"
 };
 
+function proxyUrl(origin, url) {
+  return origin + "/?url=" + encodeURIComponent(url);
+}
+
 export default {
   async fetch(request) {
 
@@ -19,7 +23,8 @@ export default {
     }
 
     const current = new URL(request.url);
-    const target =
+
+    let target =
       current.searchParams.get("url") || SOURCE;
 
     try {
@@ -33,8 +38,7 @@ export default {
 
       if (!response.ok) {
         return new Response(
-          "Gvision upstream error: " +
-          response.status,
+          "Upstream error: " + response.status,
           {
             status: response.status,
             headers: CORS
@@ -42,38 +46,44 @@ export default {
         );
       }
 
-      const type =
+      const contentType =
         response.headers.get("content-type") || "";
 
       /*
-       * MPD MANIFEST
+       * MPD
        */
       if (
         target.includes(".mpd") ||
-        type.includes("dash") ||
-        type.includes("xml")
+        contentType.includes("xml") ||
+        contentType.includes("dash")
       ) {
 
-        const text = await response.text();
+        let mpd = await response.text();
 
         const base = new URL(target);
 
         /*
-         * Rewrite URL di MPD.
+         * BaseURL
          */
-        const rewritten = text.replace(
-          /(?:https?:)?\/\/[^"'<> ]+|[^"'<> ]+\.(?:m4s|mp4)(?:\?[^"'<> ]*)?/g,
-          match => {
+        mpd = mpd.replace(
+          /<BaseURL>(.*?)<\/BaseURL>/gi,
+          (match, value) => {
 
             try {
 
               const absolute =
-                new URL(match, base).href;
+                new URL(
+                  value.trim(),
+                  base
+                ).href;
 
               return (
-                current.origin +
-                "/?url=" +
-                encodeURIComponent(absolute)
+                "<BaseURL>" +
+                proxyUrl(
+                  current.origin,
+                  absolute
+                ) +
+                "</BaseURL>"
               );
 
             } catch {
@@ -81,12 +91,44 @@ export default {
               return match;
 
             }
+          }
+        );
 
+        /*
+         * href / sourceURL / media / initialization
+         */
+        mpd = mpd.replace(
+          /(media|initialization|sourceURL|href)="([^"]+)"/gi,
+          (match, attribute, value) => {
+
+            try {
+
+              const absolute =
+                new URL(
+                  value,
+                  base
+                ).href;
+
+              return (
+                attribute +
+                '="' +
+                proxyUrl(
+                  current.origin,
+                  absolute
+                ) +
+                '"'
+              );
+
+            } catch {
+
+              return match;
+
+            }
           }
         );
 
         return new Response(
-          rewritten,
+          mpd,
           {
             status: 200,
             headers: {
@@ -99,7 +141,7 @@ export default {
       }
 
       /*
-       * VIDEO SEGMENT
+       * Segment video
        */
       return new Response(
         response.body,
