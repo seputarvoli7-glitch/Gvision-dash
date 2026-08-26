@@ -6,11 +6,11 @@ const CORS = {
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
   "Access-Control-Allow-Headers": "*",
   "Access-Control-Expose-Headers":
-    "Content-Length,Content-Range,Accept-Ranges",
+    "Content-Length, Content-Range, Accept-Ranges",
   "Cache-Control": "no-cache"
 };
 
-function proxyUrl(origin, url) {
+function workerUrl(origin, url) {
   return origin + "/?url=" + encodeURIComponent(url);
 }
 
@@ -24,10 +24,10 @@ export default {
       });
     }
 
-    const reqUrl = new URL(request.url);
+    const current = new URL(request.url);
 
     const target =
-      reqUrl.searchParams.get("url") || SOURCE;
+      current.searchParams.get("url") || SOURCE;
 
     try {
 
@@ -43,9 +43,6 @@ export default {
         "*/*"
       );
 
-      /*
-       * Penting untuk DASH video segment
-       */
       const range =
         request.headers.get("Range");
 
@@ -53,23 +50,20 @@ export default {
         headers.set("Range", range);
       }
 
-      const upstream =
-        await fetch(target, {
-          method: request.method,
-          headers
-        });
+      const upstream = await fetch(target, {
+        method: request.method,
+        headers
+      });
 
       if (!upstream.ok) {
-
         return new Response(
-          "Upstream: " +
+          "Upstream error: " +
           upstream.status,
           {
             status: upstream.status,
             headers: CORS
           }
         );
-
       }
 
       const contentType =
@@ -78,12 +72,15 @@ export default {
         ) || "";
 
       /*
-       * MPD
+       * ============================
+       * MPD MANIFEST
+       * ============================
        */
+
       if (
         target.includes(".mpd") ||
-        contentType.includes("dash") ||
-        contentType.includes("xml")
+        contentType.includes("xml") ||
+        contentType.includes("dash")
       ) {
 
         let mpd =
@@ -95,6 +92,7 @@ export default {
         /*
          * BaseURL
          */
+
         mpd = mpd.replace(
           /<BaseURL([^>]*)>([\s\S]*?)<\/BaseURL>/gi,
           (match, attrs, value) => {
@@ -111,8 +109,8 @@ export default {
                 "<BaseURL" +
                 attrs +
                 ">" +
-                proxyUrl(
-                  reqUrl.origin,
+                workerUrl(
+                  current.origin,
                   absolute
                 ) +
                 "</BaseURL>"
@@ -128,13 +126,14 @@ export default {
         );
 
         /*
-         * media=
-         * initialization=
-         * sourceURL=
+         * initialization
+         *
+         * Jangan ubah $Time$
          */
+
         mpd = mpd.replace(
-          /(media|initialization|sourceURL)="([^"]+)"/gi,
-          (match, attr, value) => {
+          /initialization="([^"]+)"/gi,
+          (match, value) => {
 
             try {
 
@@ -145,12 +144,58 @@ export default {
                 ).href;
 
               return (
-                attr +
-                '="' +
-                proxyUrl(
-                  reqUrl.origin,
+                'initialization="' +
+                workerUrl(
+                  current.origin,
                   absolute
                 ) +
+                '"'
+              );
+
+            } catch {
+
+              return match;
+
+            }
+
+          }
+        );
+
+        /*
+         * media
+         *
+         * $Time$ dipertahankan
+         */
+
+        mpd = mpd.replace(
+          /media="([^"]+)"/gi,
+          (match, value) => {
+
+            try {
+
+              /*
+               * Buat URL absolut,
+               * tetapi jangan encode
+               * tanda $Time$ sebelum
+               * dash.js memprosesnya.
+               */
+
+              const absolute =
+                new URL(
+                  value,
+                  base
+                ).href;
+
+              const proxy =
+                current.origin +
+                "/?url=" +
+                encodeURIComponent(
+                  absolute
+                );
+
+              return (
+                'media="' +
+                proxy +
                 '"'
               );
 
@@ -177,9 +222,12 @@ export default {
       }
 
       /*
-       * Segment DASH
+       * ============================
+       * SEGMENT VIDEO / AUDIO
+       * ============================
        */
-      const outHeaders =
+
+      const output =
         new Headers(CORS);
 
       const ct =
@@ -203,25 +251,25 @@ export default {
         );
 
       if (ct)
-        outHeaders.set(
+        output.set(
           "Content-Type",
           ct
         );
 
       if (cr)
-        outHeaders.set(
+        output.set(
           "Content-Range",
           cr
         );
 
       if (cl)
-        outHeaders.set(
+        output.set(
           "Content-Length",
           cl
         );
 
       if (ar)
-        outHeaders.set(
+        output.set(
           "Accept-Ranges",
           ar
         );
@@ -230,14 +278,14 @@ export default {
         upstream.body,
         {
           status: upstream.status,
-          headers: outHeaders
+          headers: output
         }
       );
 
     } catch (error) {
 
       return new Response(
-        "Worker Error: " +
+        "DASH Worker Error: " +
         error.message,
         {
           status: 500,
@@ -246,5 +294,6 @@ export default {
       );
 
     }
+
   }
 };
